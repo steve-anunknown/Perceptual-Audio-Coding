@@ -7,6 +7,7 @@ Created on Sat May 14 17:51:00 2022
 """
 #Step 1.0
 import time
+#import matplotlib.pyplot as plt
 import numpy as np
 import soundfile
 
@@ -188,10 +189,12 @@ def mdct(in_sig, k, m=M, flag="analysis"):
     hk = (np.sin((n+0.5)*np.pi/2/m) *
           ((2/M)**(1/2)) *
           (np.cos((2*n+m+1)*(2*k+1)*np.pi/(4*m))))
-    if not flag == "analysis":
+    if flag == "synthesis":
         gk = hk*(2*m-1-n)
         return np.convolve(in_sig, gk)
-    return np.convolve(in_sig, hk)
+    elif flag == "analysis":
+        return np.convolve(in_sig, hk)
+    print("wrong flag: either 'analysis' or 'synthesis'")
 
 #end of Step 2.0
 
@@ -206,8 +209,8 @@ mdct_convolutions = [[mdct(window, k)
 
 decimate = lambda insig,m: insig[::m]
 
-mdct_decimations = [[decimate(conv, M) for conv in spectrum]
-                    for spectrum in mdct_convolutions]
+mdct_decimations = [[decimate(conv, M) for conv in convols]
+                    for convols in mdct_convolutions]
 
 end = time.time()
 print(end-start)
@@ -224,9 +227,12 @@ Fk = [(2*k-1)*music_srate*np.pi/2/M for k in range(1, M+1)]
 indomain = lambda i,k,fs=music_srate,m=M: (2*k-1)*fs*np.pi/2/m- fs*np.pi/2/m <= itof(i) <= (2*k-1)*fs*np.pi/2/m+ fs*np.pi/2/m
 
 
-def bitsk(threshold, i, j):
-    if threshold[i][j]:
-        return int(np.log2(R/min(valid_thresholds[i][j]))-1)
+def bitsk(thresholds, i, j):
+    '''returns the amount of bits for the
+    quantization by filter j for window i
+    based on calculated thresholds.'''
+    if thresholds[i][j]:
+        return int(np.log2(R/min(thresholds[i][j]))-1)
     return 0
 
 
@@ -235,3 +241,46 @@ valid_thresholds = [[[spectrarum_thresholds[s][f] for f in range(N//2) if indoma
                     for s in range(NUM_WINDOWS)]
 Bk = [[bitsk(valid_thresholds, s, k) for k in range(M)]
       for s in range(NUM_WINDOWS)]
+
+Dk = [[(max(mdct_decimations[s])-min(mdct_decimations[s]))/(2 ** (Bk[s][k]+1))
+       for k in range(M)] for s in range(NUM_WINDOWS)]
+
+quantize = lambda insig,step: [step*np.round(sample/step) for sample in insig]
+
+quantized = [[quantize(mdct_decimations[s][k], Dk[s][k])
+              for k in range(M)] for s in range(NUM_WINDOWS)]
+
+# =============================================================================
+# time_axis = np.linspace(0,N/music_srate,N)
+# fig=0
+# plt.figure(fig)
+# plt.plot(time_axis,windowed_music_signals[1])
+# plt.plot(time_axis,quantize(windowed_music_signals[1],Dk[1][0]))
+# fig+=1
+# plt.figure(fig)
+# plt.plot(time_axis,windowed_music_signals[1])
+# plt.plot(time_axis,quantize(windowed_music_signals[1],(max(windowed_music_signals[1])-min(windowed_music_signals[1]))/(2 ** 5)))
+# fig+=1
+# =============================================================================
+
+#end of step 2.2
+
+#Step 2.3
+
+def dequantize(insig, levels, step):
+    '''Decodes a quantized signal.'''
+
+def oversample(insig, m=M):
+    '''Keeps every m-th sample of the
+    original signal and stuffs with zeroes
+    the inbetween samples.'''
+    result = [0 for sample in insig]
+    for s, sample in enumerate(insig):
+        if s % m == 0:
+            result[s] = sample
+
+oversampled = [[oversample(quantized[s][k]) for k in range(M)]
+               for s in range(NUM_WINDOWS)]
+
+synthesized = [[mdct(oversampled[s][k], "synthesis")
+                for k in range(M)] for s in range(NUM_WINDOWS)]
