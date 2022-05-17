@@ -279,8 +279,12 @@ def oversample(insig, m=M):
         if s % m == 0:
             result[s] = sample
 
-oversampled = [[oversample(quantized[s][k]) for k in range(M)]
-               for s in range(NUM_WINDOWS)]
-
-synthesized = [[mdct(oversampled[s][k], "synthesis")
-                for k in range(M)] for s in range(NUM_WINDOWS)]
+# =============================================================================
+# dequantized = [[dequantize(quantized[s][k],...) for k in range(M)] for s in range (NUM_WINDOWS)]
+#
+# oversampled = [[oversample(dequantized[s][k]) for k in range(M)]
+#                for s in range(NUM_WINDOWS)]
+# 
+# synthesized = [[mdct(oversampled[s][k], "synthesis")
+#                 for k in range(M)] for s in range(NUM_WINDOWS)]
+# =============================================================================
