@@ -48,17 +48,6 @@ def bark(freq):
     return 13*np.arctan(0.00076*freq)+3.5*np.arctan((freq/7500)**2)
 
 
-# =============================================================================
-# itofr = [2 * np.pi*music_length*(k+1)/music_srate for k in range(N//2)]
-# 
-# aths = [(3.64*(freq/1000)**(-0.8) -
-#         6.5 * np.exp((-0.6)*(freq/1000-3.3)**2)
-#         + (0.001)*(freq/1000)**4) for freq in itofr]
-# 
-# barks = [13*np.arctan(0.00076*freq)+3.5*np.arctan((freq/7500)**2)
-#          for freq in itofr]
-# =============================================================================
-
 itofr = [itof(k) for k in range(N//2)]
 
 aths = [ath(freq) for freq in itofr]
@@ -305,8 +294,17 @@ Fk = [(2*k-1)*music_srate*np.pi/2/M for k in range(1, M+1)]
 def indomain(i, k, fs=music_srate, m=M):
     """Check if given frequency is in k-th filter's domain."""
     return ((2*k-1)*fs*np.pi/2/m - fs*np.pi/2/m <=
-            itof(i)
+            itofr[i]
             <= (2*k-1)*fs*np.pi/2/m + fs*np.pi/2/m)
+
+
+# =============================================================================
+# domains = [[itofr[f] for f in range(N//2)
+#             if ((2*k-1)*music_srate*np.pi/2/M - music_srate*np.pi/2/M <=
+#                 itofr[f]
+#                 <= (2*k-1)*music_srate*np.pi/2/M + music_srate*np.pi/2/M)]
+#            for k in range(1, M+1)]
+# =============================================================================
 
 
 def bitsk(thresholds, i, j):
@@ -316,10 +314,28 @@ def bitsk(thresholds, i, j):
     return 0
 
 
+start = time.time()
+
+domains = [[f for f in range(N//2)
+            if ((2*k-1)*music_srate*np.pi/2/M - music_srate*np.pi/2/M <=
+                itofr[f]
+                <= (2*k-1)*music_srate*np.pi/2/M + music_srate*np.pi/2/M)]
+           for k in range(1, M+1)]
+
 valid_thresholds = [[[spectrarum_thresholds[s][f]
-                      for f in range(N//2) if indomain(f, k)]
-                     for k in range(1, M+1)]
+                      for f in domains[k]]
+                     for k in range(M)]
                     for s in range(NUM_WINDOWS)]
+
+# =============================================================================
+# valid_thresholds = [[[spectrarum_thresholds[s][f]
+#                       for f in range(N//2) if indomain(f, k)]
+#                      for k in range(1, M+1)]
+#                     for s in range(NUM_WINDOWS)]
+# =============================================================================
+
+end = time.time()
+print(end-start)
 Bk = [[bitsk(valid_thresholds, s, k) for k in range(M)]
       for s in range(NUM_WINDOWS)]
 
