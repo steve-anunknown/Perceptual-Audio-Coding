@@ -19,6 +19,7 @@ if music_signal.ndim == 2:
     music_signal = (music_signal[1]+music_signal[0])/2
 music_signal = music_signal / abs(max(music_signal))
 
+music_length = len(music_signal)
 N = 512
 MUL_N = [N*x for x in list(range(len(music_signal)//N+1))]
 NUM_WINDOWS = int(np.ceil(len(music_signal)/N))
@@ -46,6 +47,23 @@ def bark(freq):
     """Convert Hz to Bark."""
     return 13*np.arctan(0.00076*freq)+3.5*np.arctan((freq/7500)**2)
 
+
+# =============================================================================
+# itofr = [2 * np.pi*music_length*(k+1)/music_srate for k in range(N//2)]
+# 
+# aths = [(3.64*(freq/1000)**(-0.8) -
+#         6.5 * np.exp((-0.6)*(freq/1000-3.3)**2)
+#         + (0.001)*(freq/1000)**4) for freq in itofr]
+# 
+# barks = [13*np.arctan(0.00076*freq)+3.5*np.arctan((freq/7500)**2)
+#          for freq in itofr]
+# =============================================================================
+
+itofr = [itof(k) for k in range(N//2)]
+
+aths = [ath(freq) for freq in itofr]
+
+barks = [bark(freq) for freq in itofr]
 
 PN = 90.302  # dB
 
@@ -140,25 +158,25 @@ print(end-start)
 # Step 1.4
 
 
-def IMT(pos_i, pos_j, masks, flag):
+def imt(pos_i, pos_j, masks, flag):
     """
     Individual masking thresholds.
 
     Returns the amount of covering in point i from the tone or
     noise mask in point j.
     """
-    freq_j = itof(pos_j)
+    # freq_j = itof(pos_j)
 
-    def SF(pos_i, pos_j, masks):
+    def sf(pos_i, pos_j, masks):
         """
         Help function.
 
         Minimum power level that neighbouring frequencies must have,
         so that both of them are perceptible by a human.
         """
-        freq_i = itof(pos_i)
-        freq_j = itof(pos_j)
-        delta_bark = bark(freq_i)-bark(freq_j)
+        # freq_i = itof(pos_i)
+        # freq_j = itof(pos_j)
+        delta_bark = barks[pos_i]-barks[pos_j]
         if -3 <= delta_bark < -1:
             return 17*delta_bark-0.4*masks[pos_j]+11
         if -1 <= delta_bark < 0:
@@ -167,13 +185,13 @@ def IMT(pos_i, pos_j, masks, flag):
             return -17*delta_bark
         return delta_bark*(0.15*masks[pos_j]-17)-0.15*masks[pos_j]
     if flag == "TM":
-        return masks[pos_j]-0.275*bark(freq_j)+SF(pos_i, pos_j, masks)-6.025
-    return masks[pos_j]-0.175*bark(freq_j)+SF(pos_i, pos_j, masks)-2.025
+        return masks[pos_j]-0.275*barks[pos_j]+sf(pos_i, pos_j, masks)-6.025
+    return masks[pos_j]-0.175*barks[pos_j]+sf(pos_i, pos_j, masks)-2.025
 
 
 # =============================================================================
 # Perhaphs this section, from here to the end of step 1.4, can be improved.
-# It takes around 60 seconds to run
+# It takes around 60 seconds to run. Try to implement using dictionaries.
 # =============================================================================
 start = time.time()
 transposeP_TMc = np.transpose(P_TMc)
@@ -182,18 +200,21 @@ J_TM = [[j for j, noiseMask in enumerate(transposeP_TMc[s]) if noiseMask > 0]
 
 start1 = time.time()
 spectrarum_masks = [[row[s] for row in P_TMc] for s in range(NUM_WINDOWS)]
-T_TM = [[[IMT(i, j, spectrarum_masks[s], "TM") for j in J_TM[s]]
+T_TM = [[[imt(i, j, spectrarum_masks[s], "TM") for j in J_TM[s]]
         for i in range(N//2)]
         for s in range(NUM_WINDOWS)]
+
 end1 = time.time()
 print(end1-start1)
+
+
 transposeP_NMc = np.transpose(P_NMc)
 J_NM = [[j for j, noiseMask in enumerate(transposeP_NMc[s]) if noiseMask > 0]
         for s in range(NUM_WINDOWS)]
 
 start1 = time.time()
 spectrarum_masks = [[row[s] for row in P_NMc] for s in range(NUM_WINDOWS)]
-T_NM = [[[IMT(i, j, spectrarum_masks[s], "NM") for j in J_NM[s]]
+T_NM = [[[imt(i, j, spectrarum_masks[s], "NM") for j in J_NM[s]]
         for i in range(N//2)]
         for s in range(NUM_WINDOWS)]
 end1 = time.time()
@@ -215,7 +236,7 @@ start = time.time()
 def gbm(k, tone_thresholds, noise_thresholds):
     """Calculate the Global Masking Threshold."""
     return 10*np.log10(
-        10**(0.1*ath(itof(k))) +
+        10**(0.1*aths[k]) +
         sum([10**(0.1*(tone_thresholds[k][q]))
              for q in range(len(tone_thresholds[k]))]) +
         sum([10**(0.1*(noise_thresholds[k][m]))
@@ -256,7 +277,7 @@ start = time.time()
 
 windowed_music_signals = [music_signal[x:x+N] for x in MUL_N]
 mdct_convolutions = [[mdct(window, k)
-                      for k in range(0, M)]
+                      for k in range(M)]
                      for window in windowed_music_signals]
 
 
