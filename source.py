@@ -23,17 +23,10 @@ music_length = len(music_signal)
 N = 512
 MUL_N = [N*x for x in list(range(len(music_signal)//N+1))]
 NUM_WINDOWS = int(np.ceil(len(music_signal)/N))
+PN = 90.302  # dB
+M = 32
 
-
-def itof(k, in_sig=music_signal, s_rate=music_srate):
-    """Convert discrete frequency to natural frequency."""
-    return 2 * np.pi*len(in_sig)*(k+1)/s_rate
-
-# end of Step 1.0
-
-# Step 1.1
-# ##############################################################################
-# functions
+# Helpful functions
 
 
 def ath(freq):
@@ -48,13 +41,9 @@ def bark(freq):
     return 13*np.arctan(0.00076*freq)+3.5*np.arctan((freq/7500)**2)
 
 
-itofr = [itof(k) for k in range(N//2)]
-
-aths = [ath(freq) for freq in itofr]
-
-barks = [bark(freq) for freq in itofr]
-
-PN = 90.302  # dB
+def itof(k, samples=N, s_rate=music_srate):
+    """Convert discrete frequency to natural frequency."""
+    return s_rate * (k+1) // samples
 
 
 def halfit(insig):
@@ -66,17 +55,6 @@ def power_spec(insig, points):
     """Calculate the power spectrum of insig using "points" points."""
     return halfit(PN+10*np.log10(
         abs(np.fft.fft(insig*np.hanning(len(insig)), points))**2))
-# end of functions
-# ##############################################################################
-
-
-power_spectra_music = [power_spec(music_signal[x:x+N], N) for x in MUL_N]
-
-# end of Step 1.1
-
-# Step 1.2
-# ##############################################################################
-# functions
 
 
 def mask_band(k):
@@ -120,31 +98,6 @@ def mask_power(power_spectrum, k):
     return (10*np.log10(10**(0.1*power_spectrum[k-1]) +
                         10**(0.1*power_spectrum[k]) +
                         10**(0.1*power_spectrum[k+1]))**2)
-# end of functions
-# ##############################################################################
-
-
-mask_positions = [find_mask_positions(spectrum)
-                  for spectrum in power_spectra_music]
-power_mask_positions = [[] for element in power_spectra_music]
-for index, spectrum in enumerate(power_spectra_music):
-    for position, sample in enumerate(spectrum):
-        power_mask_positions[index].append(mask_power(spectrum, position))
-P_NM = np.load("P_NM.npy")
-
-# end of Step 1.2
-
-# Step 1.3
-
-P_TMc = np.load("P_TMc.npy")
-P_NMc = np.load("P_NMc.npy")
-
-end = time.time()
-print(end-start)
-
-# end of Step 1.3
-
-# Step 1.4
 
 
 def imt(pos_i, pos_j, masks, flag):
@@ -155,6 +108,8 @@ def imt(pos_i, pos_j, masks, flag):
     noise mask in point j.
     """
     # freq_j = itof(pos_j)
+    if barks[pos_i]-barks[pos_j] > 8 or barks[pos_i]-barks[pos_j] < -3:
+        return 0
 
     def sf(pos_i, pos_j, masks):
         """
@@ -166,6 +121,8 @@ def imt(pos_i, pos_j, masks, flag):
         # freq_i = itof(pos_i)
         # freq_j = itof(pos_j)
         delta_bark = barks[pos_i]-barks[pos_j]
+        if delta_bark >= 8 or delta_bark < -3:
+            return 0
         if -3 <= delta_bark < -1:
             return 17*delta_bark-0.4*masks[pos_j]+11
         if -1 <= delta_bark < 0:
@@ -178,50 +135,6 @@ def imt(pos_i, pos_j, masks, flag):
     return masks[pos_j]-0.175*barks[pos_j]+sf(pos_i, pos_j, masks)-2.025
 
 
-# =============================================================================
-# Perhaphs this section, from here to the end of step 1.4, can be improved.
-# It takes around 60 seconds to run. Try to implement using dictionaries.
-# =============================================================================
-start = time.time()
-transposeP_TMc = np.transpose(P_TMc)
-J_TM = [[j for j, noiseMask in enumerate(transposeP_TMc[s]) if noiseMask > 0]
-        for s in range(NUM_WINDOWS)]
-
-start1 = time.time()
-spectrarum_masks = [[row[s] for row in P_TMc] for s in range(NUM_WINDOWS)]
-T_TM = [[[imt(i, j, spectrarum_masks[s], "TM") for j in J_TM[s]]
-        for i in range(N//2)]
-        for s in range(NUM_WINDOWS)]
-
-end1 = time.time()
-print(end1-start1)
-
-
-transposeP_NMc = np.transpose(P_NMc)
-J_NM = [[j for j, noiseMask in enumerate(transposeP_NMc[s]) if noiseMask > 0]
-        for s in range(NUM_WINDOWS)]
-
-start1 = time.time()
-spectrarum_masks = [[row[s] for row in P_NMc] for s in range(NUM_WINDOWS)]
-T_NM = [[[imt(i, j, spectrarum_masks[s], "NM") for j in J_NM[s]]
-        for i in range(N//2)]
-        for s in range(NUM_WINDOWS)]
-end1 = time.time()
-print(end1-start1)
-end = time.time()
-print(end-start)
-# =============================================================================
-# end of section
-# =============================================================================
-
-
-# end of Step 1.4
-
-# Step 1.5
-
-start = time.time()
-
-
 def gbm(k, tone_thresholds, noise_thresholds):
     """Calculate the Global Masking Threshold."""
     return 10*np.log10(
@@ -232,22 +145,14 @@ def gbm(k, tone_thresholds, noise_thresholds):
              for m in range(len(noise_thresholds[k]))]))
 
 
-spectrarum_thresholds = [[gbm(i, T_TM[s], T_NM[s])
-                         for i in range(N//2)]
-                         for s in range(NUM_WINDOWS)]
-end = time.time()
-print(end-start)
-
-# end of Step 1.5
-
-# Step 2.0
-
-M = 32
+def downsample(insig, m):
+    """Keep every m-th point of insig."""
+    return insig[::m]
 
 
 def mdct(in_sig, k, m=M, flag="analysis"):
     """Perform the Modified Discrete Cosine Transform."""
-    n = np.linspace(0, len(in_sig)-1, len(in_sig))
+    n = np.linspace(0, 2*m-1, 2*m)
     hk = (np.sin((n+0.5)*np.pi/2/m) *
           ((2/M)**(1/2)) *
           (np.cos((2*n+m+1)*(2*k+1)*np.pi/(4*m))))
@@ -258,54 +163,6 @@ def mdct(in_sig, k, m=M, flag="analysis"):
         return np.convolve(in_sig, hk)
     print("wrong flag: either 'analysis' or 'synthesis'")
 
-# end of Step 2.0
-
-
-# Step 2.1
-start = time.time()
-
-windowed_music_signals = [music_signal[x:x+N] for x in MUL_N]
-mdct_convolutions = [[mdct(window, k)
-                      for k in range(M)]
-                     for window in windowed_music_signals]
-
-
-def decimate(insig, m):
-    """Keep every m-th point of insig."""
-    return insig[::m]
-
-
-mdct_decimations = [[decimate(conv, M) for conv in convols]
-                    for convols in mdct_convolutions]
-
-end = time.time()
-print(end-start)
-
-# end of Step 2.1
-
-# Step 2.2
-
-B = 16  # number of bits used for the encoding of each signal sample
-R = 2**B  # number of intensity levels of the original signal
-# central frequency of each of M=32 filters
-Fk = [(2*k-1)*music_srate*np.pi/2/M for k in range(1, M+1)]
-
-
-def indomain(i, k, fs=music_srate, m=M):
-    """Check if given frequency is in k-th filter's domain."""
-    return ((2*k-1)*fs*np.pi/2/m - fs*np.pi/2/m <=
-            itofr[i]
-            <= (2*k-1)*fs*np.pi/2/m + fs*np.pi/2/m)
-
-
-# =============================================================================
-# domains = [[itofr[f] for f in range(N//2)
-#             if ((2*k-1)*music_srate*np.pi/2/M - music_srate*np.pi/2/M <=
-#                 itofr[f]
-#                 <= (2*k-1)*music_srate*np.pi/2/M + music_srate*np.pi/2/M)]
-#            for k in range(1, M+1)]
-# =============================================================================
-
 
 def bitsk(thresholds, i, j):
     """Calculate required bits for quantization."""
@@ -314,36 +171,9 @@ def bitsk(thresholds, i, j):
     return 0
 
 
-start = time.time()
-
-domains = [[f for f in range(N//2)
-            if ((2*k-1)*music_srate*np.pi/2/M - music_srate*np.pi/2/M <=
-                itofr[f]
-                <= (2*k-1)*music_srate*np.pi/2/M + music_srate*np.pi/2/M)]
-           for k in range(1, M+1)]
-
-valid_thresholds = [[[spectrarum_thresholds[s][f]
-                      for f in domains[k]]
-                     for k in range(M)]
-                    for s in range(NUM_WINDOWS)]
-
-# =============================================================================
-# valid_thresholds = [[[spectrarum_thresholds[s][f]
-#                       for f in range(N//2) if indomain(f, k)]
-#                      for k in range(1, M+1)]
-#                     for s in range(NUM_WINDOWS)]
-# =============================================================================
-
-end = time.time()
-print(end-start)
-Bk = [[bitsk(valid_thresholds, s, k) for k in range(M)]
-      for s in range(NUM_WINDOWS)]
-
-Dk = [[(
-        (max(mdct_decimations[s][k])-min(mdct_decimations[s][k]))
-        / (2 ** (Bk[s][k]+1))
-        )
-       for k in range(M)] for s in range(NUM_WINDOWS)]
+def stepk(insig, bits):
+    """Calculate the quantization step of insig using "bits" bits."""
+    return (max(insig)-min(insig))/(2**(bits+1))
 
 
 def quantize(insig, bits):
@@ -359,11 +189,156 @@ def quantize(insig, bits):
             for sample in insig]
 
 
-quantized = [[quantize(mdct_decimations[s][k], Bk[s][k])
+def dequantize(insig, first_level, step, bits):
+    """Decode a quantized signal."""
+    # first_level and step are numpy 16 bit floats
+
+    # step*max(insig) is basically the max value of
+    # the input signal before quantization.
+    # first_level is the minimum value of the input
+    # signal before quantization.
+    # Their difference gives the range of the input
+    # signal before quantization.
+    if bits == 0:
+        return insig
+    sigrange = step*max(insig)-first_level
+    levels = 2**bits
+    return [sample/(levels-1)*(sigrange)+first_level
+            for sample in insig]
+
+
+def oversample(insig, m=M):
+    """
+    Oversample.
+
+    Keep every m-th sample of insig and stuff the blanks with zeroes.
+    """
+    result = [0 for _ in range(len(insig)*m)]
+    for s in range(len(insig)*m):
+        if s % m == 0:
+            result[s] = insig[s//m]
+    return result
+
+# end of helpful functions
+
+# These arrays are helpful for speeding up some computations
+
+
+itofr = [itof(k) for k in range(N//2)]
+
+aths = [ath(freq) for freq in itofr]
+
+barks = [bark(freq) for freq in itofr]
+
+# end of helpful arrays
+
+
+power_spectra_music = [power_spec(music_signal[x:x+N], N) for x in MUL_N]
+
+mask_positions = [find_mask_positions(spectrum)
+                  for spectrum in power_spectra_music]
+power_mask_positions = [[] for element in power_spectra_music]
+for index, spectrum in enumerate(power_spectra_music):
+    for position, sample in enumerate(spectrum):
+        power_mask_positions[index].append(mask_power(spectrum, position))
+
+# Load new masks because the old ones were wrong
+
+
+P_NM = np.load("P_NM.npy")
+P_TMc = np.load("P_TMc.npy")
+P_NMc = np.load("P_NMc.npy")
+
+end = time.time()
+print(end-start)
+
+start = time.time()
+transposeP_TMc = np.transpose(P_TMc)
+J_TM = [[j for j, noiseMask in enumerate(transposeP_TMc[s]) if noiseMask > 0]
+        for s in range(NUM_WINDOWS)]
+
+start1 = time.time()
+spectrarum_masks = [[row[s] for row in P_TMc] for s in range(NUM_WINDOWS)]
+T_TM = [[[imt(i, j, spectrarum_masks[s], "TM") for j in J_TM[s]]
+        for i in range(N//2)]
+        for s in range(NUM_WINDOWS)]
+
+end1 = time.time()
+print(end1-start1)
+
+transposeP_NMc = np.transpose(P_NMc)
+J_NM = [[j for j, noiseMask in enumerate(transposeP_NMc[s]) if noiseMask > 0]
+        for s in range(NUM_WINDOWS)]
+
+start1 = time.time()
+spectrarum_masks = [[row[s] for row in P_NMc] for s in range(NUM_WINDOWS)]
+T_NM = [[[imt(i, j, spectrarum_masks[s], "NM") for j in J_NM[s]]
+        for i in range(N//2)]
+        for s in range(NUM_WINDOWS)]
+
+end1 = time.time()
+print(end1-start1)
+end = time.time()
+print(end-start)
+
+start = time.time()
+
+spectrarum_thresholds = [[gbm(i, T_TM[s], T_NM[s])
+                         for i in range(N//2)]
+                         for s in range(NUM_WINDOWS)]
+end = time.time()
+print(end-start)
+
+start = time.time()
+
+windowed_music_signals = [music_signal[x:x+N] for x in MUL_N]
+mdct_convolutions = [[mdct(window, k)
+                     for k in range(M)]
+                     for window in windowed_music_signals]
+
+mdct_downsampled = [[downsample(conv, M)
+                    for conv in convols]
+                    for convols in mdct_convolutions]
+
+end = time.time()
+print(end-start)
+
+B = 16  # number of bits used for the encoding of each signal sample
+R = 2**B  # number of intensity levels of the original signal
+# central frequency of each of M=32 filters
+Fk = [(2*k-1)*music_srate*np.pi/2/M for k in range(1, M+1)]
+
+start = time.time()
+
+domains = [[f for f in range(N//2)
+            if ((2*k-1)*music_srate*np.pi/2/M - music_srate*np.pi/2/M <=
+                itofr[f]
+                <= (2*k-1)*music_srate*np.pi/2/M + music_srate*np.pi/2/M)]
+           for k in range(1, M+1)]
+
+valid_thresholds = [[[spectrarum_thresholds[s][f]
+                      for f in domains[k]]
+                     for k in range(M)]
+                    for s in range(NUM_WINDOWS)]
+
+end = time.time()
+print(end-start)
+Bk = [[bitsk(valid_thresholds, s, k) for k in range(M)]
+      for s in range(NUM_WINDOWS)]
+
+Dk = [[stepk(mdct_downsampled[s][k], Bk[s][k])
+      for k in range(M)] for s in range(NUM_WINDOWS)]
+
+quantized = [[quantize(mdct_downsampled[s][k], Bk[s][k])
               for k in range(M)] for s in range(NUM_WINDOWS)]
 
-quantized_8bit = [[quantize(mdct_decimations[s][k], 8)
+
+quantized_8bit = [[quantize(mdct_downsampled[s][k], 8)
                    for k in range(M)] for s in range(NUM_WINDOWS)]
+
+first_levels = [[min(mdct_downsampled[s][k])
+                 for k in range(M)]
+                for s in range(NUM_WINDOWS)]
 
 # =============================================================================
 # time_axis = np.linspace(0,N/music_srate,N)
@@ -379,36 +354,62 @@ quantized_8bit = [[quantize(mdct_decimations[s][k], 8)
 # fig+=1
 # =============================================================================
 
-# end of step 2.2
+dequantized = [[dequantize(quantized[s][k],
+                           first_levels[s][k].astype("float16"),
+                           Dk[s][k].astype("float16"),
+                           Bk[s][k]) for k in range(M)]
+               for s in range(NUM_WINDOWS)]
 
-# Step 2.3
+oversampled = [[oversample(dequantized[s][k]) for k in range(M)]
+               for s in range(NUM_WINDOWS)]
 
-
-def dequantize(insig, first_level, step, bits=16):
-    """Decode a quantized signal."""
-    levels = 2**bits
-    sigrange = step*max(insig)-first_level
-    return [sample/(levels-1)*(sigrange)+first_level for sample in insig]
-
-
-def oversample(insig, m=M):
-    """
-    Oversample.
-
-    Keep every m-th sample of insig and stuff the blanks with zeroes.
-    """
-    result = [0 for sample in insig]
-    for s, sample in enumerate(insig):
-        if s % m == 0:
-            result[s] = sample
+synthesized = [[mdct(oversampled[s][k], k, M, "synthesis")
+                for k in range(M)] for s in range(NUM_WINDOWS)]
 
 # =============================================================================
-# dequantized = [[dequantize(quantized[s][k],...) for k in range(M)]
-#                 for s in range (NUM_WINDOWS)]
-#
-# oversampled = [[oversample(dequantized[s][k]) for k in range(M)]
-#                for s in range(NUM_WINDOWS)]
-#
-# synthesized = [[mdct(oversampled[s][k], "synthesis")
-#                 for k in range(M)] for s in range(NUM_WINDOWS)]
+# fig = 0
+# for i in range(0, 20):
+#     plt.figure(fig)
+#     plt.plot(barks, spectrarum_thresholds[i])
+# fig += 1
+# for i in range(0, 20):
+#     plt.figure(fig)
+#     plt.plot(barks, spectrarum_thresholds[100+i])
+# fig += 1
+# for i in range(0, 20):
+#     plt.figure(fig)
+#     plt.plot(barks, spectrarum_thresholds[200+i])
+# fig += 1
+# for i in range(0, 20):
+#     plt.figure(fig)
+#     plt.plot(barks, spectrarum_thresholds[300+i])
+# fig += 1
+# for i in range(0, 20):
+#     plt.figure(fig)
+#     plt.plot(barks, spectrarum_thresholds[400+i])
+# fig += 1
+# for i in range(0, 20):
+#     plt.figure(fig)
+#     plt.plot(barks, spectrarum_thresholds[500+i])
+# fig += 1
+# for i in range(0, 20):
+#     plt.figure(fig)
+#     plt.plot(barks, spectrarum_thresholds[600+i])
+# fig += 1
+# for i in range(0, 20):
+#     plt.figure(fig)
+#     plt.plot(barks, spectrarum_thresholds[700+i])
+# fig += 1
+# for i in range(0, 20):
+#     plt.figure(fig)
+#     plt.plot(barks, spectrarum_thresholds[800+i])
+# fig += 1
+# for i in range(0, 20):
+#     plt.figure(fig)
+#     plt.plot(barks, spectrarum_thresholds[900+i])
+# fig += 1
+# for i in range(0, 20):
+#     plt.figure(fig)
+#     plt.plot(barks, spectrarum_thresholds[1000+i])
+# fig += 1
 # =============================================================================
