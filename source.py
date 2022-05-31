@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sat May 14 17:51:00 2022
+Created on Sat May 14 17:51:00 2022.
 
 @author: Anastasios Stefanos Anagnostou
          Spyridon Papadopoulos
 """
-# Step 1.0
-import time
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 import numpy as np
 import soundfile
 
-start = time.time()
+# DATA FOR PROCESSING
 
 music_signal, music_srate = soundfile.read("music.wav")
 music_signal = np.transpose(music_signal)
@@ -25,9 +23,16 @@ MUL_N = [N*x for x in list(range(len(music_signal)//N+1))]
 NUM_WINDOWS = int(np.ceil(len(music_signal)/N))
 PN = 90.302  # dB
 M = 32
+B = 16  # number of bits used for the encoding of each signal sample
+R = 2**B  # number of intensity levels of the original signal
+# central frequency of each of M=32 filters
+Fk = [(2*k-1)*music_srate/4/M for k in range(1, M+1)]
 
-# Helpful functions
+# END OF DATA FOR PROCESSING
 
+
+# HELPFUL FUNCTIONS
+# START OF PART 1 FUNCTIONS
 
 def ath(freq):
     """Calculate the Absolute threshold of hearing."""
@@ -144,6 +149,9 @@ def gbm(k, tone_thresholds, noise_thresholds):
         sum([10**(0.1*(noise_thresholds[k][m]))
              for m in range(len(noise_thresholds[k]))]))
 
+# END OF PART 1 FUNCTIONS
+# PART 2 FUNCTIONS
+
 
 def downsample(insig, m):
     """Keep every m-th point of insig."""
@@ -157,7 +165,8 @@ def mdct(in_sig, k, m=M, flag="analysis"):
           ((2/M)**(1/2)) *
           (np.cos((2*n+m+1)*(2*k+1)*np.pi/(4*m))))
     if flag == "synthesis":
-        gk = hk*(2*m-1-n)
+        # gk = hk*(2*m-1-n)
+        gk = hk[::-1]
         return np.convolve(in_sig, gk)
     elif flag == "analysis":
         return np.convolve(in_sig, hk)
@@ -167,7 +176,7 @@ def mdct(in_sig, k, m=M, flag="analysis"):
 def bitsk(thresholds, i, j):
     """Calculate required bits for quantization."""
     if thresholds[i][j]:
-        return int(np.log2(R/min(thresholds[i][j]))-1)
+        return int(np.log2(2**(16)/min(thresholds[i][j]))-1)
     return 0
 
 
@@ -176,35 +185,13 @@ def stepk(insig, bits):
     return (max(insig)-min(insig))/(2**(bits+1))
 
 
-def quantize(insig, bits):
+def quantize(insig, bits, step):
     """Perform quantization.
 
     Return the quantization level of each sample.
     """
-    levels = 2**bits
-    sigmax = max(insig)
     sigmin = min(insig)
-    sigrange = sigmax-sigmin
-    return [int(np.round((sample-sigmin)/sigrange*(levels-1)))
-            for sample in insig]
-
-
-def dequantize(insig, first_level, step, bits):
-    """Decode a quantized signal."""
-    # first_level and step are numpy 16 bit floats
-
-    # step*max(insig) is basically the max value of
-    # the input signal before quantization.
-    # first_level is the minimum value of the input
-    # signal before quantization.
-    # Their difference gives the range of the input
-    # signal before quantization.
-    if bits == 0:
-        return insig
-    sigrange = step*max(insig)-first_level
-    levels = 2**bits
-    return [sample/(levels-1)*(sigrange)+first_level
-            for sample in insig]
+    return [sigmin + np.floor((sample - sigmin)/step)*step for sample in insig]
 
 
 def oversample(insig, m=M):
@@ -219,126 +206,151 @@ def oversample(insig, m=M):
             result[s] = insig[s//m]
     return result
 
-# end of helpful functions
+
+def process(windows, spec_thresh):
+    """Process the given windows and perform adaptive quantization."""
+    mdct_convolutions = [[mdct(window, k) for k in range(M)]
+                         for window in windows]
+    mdct_downsampled = [[downsample(conv, M) for conv in convols]
+                        for convols in mdct_convolutions]
+    valid_thresholds = [[[spec_thresh[s][f] for f in domains[k]]
+                         for k in range(M)] for s in range(NUM_WINDOWS)]
+    Bk = [[bitsk(valid_thresholds, s, k) for k in range(M)]
+          for s in range(NUM_WINDOWS)]
+    Dk = [[stepk(mdct_downsampled[s][k], Bk[s][k])
+          for k in range(M)] for s in range(NUM_WINDOWS)]
+    quantized = [[quantize(mdct_downsampled[s][k], Bk[s][k], Dk[s][k])
+                  for k in range(M)] for s in range(NUM_WINDOWS)]
+    oversampled = [[oversample(quantized[s][k]) for k in range(M)]
+                   for s in range(NUM_WINDOWS)]
+    return [[mdct(oversampled[s][k], k, M, "synthesis")
+             for k in range(M)] for s in range(NUM_WINDOWS)]
+
+
+def process_8bit(windows):
+    """Process the given windows and perform uniform 8-bit quantization."""
+    mdct_convolutions = [[mdct(window, k)
+                         for k in range(M)]
+                         for window in windows]
+
+    mdct_downsampled = [[downsample(conv, M)
+                        for conv in convols]
+                        for convols in mdct_convolutions]
+    quantized_8bit = [[quantize(mdct_downsampled[s][k], 8, 2**(-7))
+                       for k in range(M)] for s in range(NUM_WINDOWS)]
+    oversampled_8bit = [[oversample(quantized_8bit[s][k]) for k in range(M)]
+                        for s in range(NUM_WINDOWS)]
+    return [[mdct(oversampled_8bit[s][k], k, M, "synthesis")
+             for k in range(M)] for s in range(NUM_WINDOWS)]
+
+
+def reconstruct(windows, filename, srate=44100):
+    """Reconstruct the final signal using given windows and write to wav."""
+    added = [np.zeros(len(windows[0][0])) for window in windows]
+    for index, window in enumerate(windows):
+        for filtered in window:
+            added[index] = list(np.array(filtered)+np.array(added[index]))
+    added = np.array(added)
+    length = len(added[0])
+    result = added[0][0:length] + \
+        np.pad(added[1][0:length-N], (N, 0), 'constant')
+    for i in range(1, NUM_WINDOWS-1):
+        result = np.append(result, added[i][length-N:length] +
+                           np.pad(added[i+1][0:length-N], (2*N-length, 0), 'constant'))
+    soundfile.write(filename, result/max(result), srate)
+    return result
+
+# END OF PART 2 FUNCTIONS
+
+# END OF HELPFUL FUNCTIONS
 
 # These arrays are helpful for speeding up some computations
 
 
-itofr = [itof(k) for k in range(N//2)]
+itofr = [itof(k) for k in range(N//2)]  # index to natural frequency
 
-aths = [ath(freq) for freq in itofr]
+aths = [ath(freq) for freq in itofr]    # absolute thresholds of hearing
 
-barks = [bark(freq) for freq in itofr]
+barks = [bark(freq) for freq in itofr]  # index to bark frequency
+
+domains = [[f for f in range(N//2)
+            if ((2*k-1)*music_srate/4/M - music_srate/4/M <=
+                itofr[f]
+                <= (2*k-1)*music_srate/4/M + music_srate/4/M)]
+           for k in range(1, M+1)]  # frequency domains for the filter in 2.3
 
 # end of helpful arrays
 
+# =============================================================================
+# START OF PART 1
 
+# power spectrum for each window of the music signal
 power_spectra_music = [power_spec(music_signal[x:x+N], N) for x in MUL_N]
 
+# positions of masks in power spectrum of each window
 mask_positions = [find_mask_positions(spectrum)
                   for spectrum in power_spectra_music]
-power_mask_positions = [[] for element in power_spectra_music]
-for index, spectrum in enumerate(power_spectra_music):
-    for position, sample in enumerate(spectrum):
-        power_mask_positions[index].append(mask_power(spectrum, position))
-
-# Load new masks because the old ones were wrong
-
+# power of each mask in power spectrum of each window
+power_mask_positions = [[mask_power(spectrum, position)
+                         for position in range(len(spectrum))]
+                        for spectrum in power_spectra_music]
 
 P_NM = np.load("P_NM.npy")
 P_TMc = np.load("P_TMc.npy")
 P_NMc = np.load("P_NMc.npy")
 
-end = time.time()
-print(end-start)
-
-start = time.time()
 transposeP_TMc = np.transpose(P_TMc)
-J_TM = [[j for j, noiseMask in enumerate(transposeP_TMc[s]) if noiseMask > 0]
-        for s in range(NUM_WINDOWS)]
+J_TM = [[j for j, toneMask in enumerate(transposeP_TMc[s]) if toneMask > 0]
+        for s in range(NUM_WINDOWS)]    # indexes of tone masks
 
-start1 = time.time()
 spectrarum_masks = [[row[s] for row in P_TMc] for s in range(NUM_WINDOWS)]
 T_TM = [[[imt(i, j, spectrarum_masks[s], "TM") for j in J_TM[s]]
         for i in range(N//2)]
-        for s in range(NUM_WINDOWS)]
-
-end1 = time.time()
-print(end1-start1)
+        for s in range(NUM_WINDOWS)]    # individual masking thresholds
 
 transposeP_NMc = np.transpose(P_NMc)
 J_NM = [[j for j, noiseMask in enumerate(transposeP_NMc[s]) if noiseMask > 0]
-        for s in range(NUM_WINDOWS)]
+        for s in range(NUM_WINDOWS)]    # indexes of noise masks
 
-start1 = time.time()
 spectrarum_masks = [[row[s] for row in P_NMc] for s in range(NUM_WINDOWS)]
 T_NM = [[[imt(i, j, spectrarum_masks[s], "NM") for j in J_NM[s]]
         for i in range(N//2)]
-        for s in range(NUM_WINDOWS)]
+        for s in range(NUM_WINDOWS)]    # individual masking thresholds
 
-end1 = time.time()
-print(end1-start1)
-end = time.time()
-print(end-start)
-
-start = time.time()
-
+# global masking thresholds
 spectrarum_thresholds = [[gbm(i, T_TM[s], T_NM[s])
                          for i in range(N//2)]
                          for s in range(NUM_WINDOWS)]
-end = time.time()
-print(end-start)
 
-start = time.time()
+# END OF PART 1
+# =============================================================================
+
+# =============================================================================
+# START OF PART 2
 
 windowed_music_signals = [music_signal[x:x+N] for x in MUL_N]
-mdct_convolutions = [[mdct(window, k)
-                     for k in range(M)]
-                     for window in windowed_music_signals]
+windowed_music_signals[NUM_WINDOWS-1] = np.append(
+    windowed_music_signals[NUM_WINDOWS-1], np.zeros(N-len(windowed_music_signals[NUM_WINDOWS-1])))
 
-mdct_downsampled = [[downsample(conv, M)
-                    for conv in convols]
-                    for convols in mdct_convolutions]
+synthesized = process(windowed_music_signals, spectrarum_thresholds)
 
-end = time.time()
-print(end-start)
+synthesized_8bit = process_8bit(windowed_music_signals)
 
-B = 16  # number of bits used for the encoding of each signal sample
-R = 2**B  # number of intensity levels of the original signal
-# central frequency of each of M=32 filters
-Fk = [(2*k-1)*music_srate*np.pi/2/M for k in range(1, M+1)]
+result_adaptive = reconstruct(synthesized, "result_adaptive.wav")
 
-start = time.time()
+result_8bit = reconstruct(synthesized_8bit, "result_8bit.wav")
 
-domains = [[f for f in range(N//2)
-            if ((2*k-1)*music_srate*np.pi/2/M - music_srate*np.pi/2/M <=
-                itofr[f]
-                <= (2*k-1)*music_srate*np.pi/2/M + music_srate*np.pi/2/M)]
-           for k in range(1, M+1)]
+# END OF PART 2
+# =============================================================================
 
-valid_thresholds = [[[spectrarum_thresholds[s][f]
-                      for f in domains[k]]
-                     for k in range(M)]
-                    for s in range(NUM_WINDOWS)]
-
-end = time.time()
-print(end-start)
-Bk = [[bitsk(valid_thresholds, s, k) for k in range(M)]
-      for s in range(NUM_WINDOWS)]
-
-Dk = [[stepk(mdct_downsampled[s][k], Bk[s][k])
-      for k in range(M)] for s in range(NUM_WINDOWS)]
-
-quantized = [[quantize(mdct_downsampled[s][k], Bk[s][k])
-              for k in range(M)] for s in range(NUM_WINDOWS)]
-
-
-quantized_8bit = [[quantize(mdct_downsampled[s][k], 8)
-                   for k in range(M)] for s in range(NUM_WINDOWS)]
-
-first_levels = [[min(mdct_downsampled[s][k])
-                 for k in range(M)]
-                for s in range(NUM_WINDOWS)]
+# =============================================================================
+# fig = 0
+# plt.figure(fig)
+# plt.plot(np.linspace(0, N/music_srate, len(result)), result/max(result))
+# fig += 1
+# plt.figure(fig)
+# plt.plot(np.linspace(0, N/music_srate, len(music_signal)), music_signal)
+# =============================================================================
 
 # =============================================================================
 # time_axis = np.linspace(0,N/music_srate,N)
@@ -353,18 +365,6 @@ first_levels = [[min(mdct_downsampled[s][k])
 #         (max(windowed_music_signals[1])-min(windowed_music_signals[1]))/(2**5)))
 # fig+=1
 # =============================================================================
-
-dequantized = [[dequantize(quantized[s][k],
-                           first_levels[s][k].astype("float16"),
-                           Dk[s][k].astype("float16"),
-                           Bk[s][k]) for k in range(M)]
-               for s in range(NUM_WINDOWS)]
-
-oversampled = [[oversample(dequantized[s][k]) for k in range(M)]
-               for s in range(NUM_WINDOWS)]
-
-synthesized = [[mdct(oversampled[s][k], k, M, "synthesis")
-                for k in range(M)] for s in range(NUM_WINDOWS)]
 
 # =============================================================================
 # fig = 0
