@@ -5,11 +5,15 @@ Created on Sat May 14 17:51:00 2022.
 @author: Anastasios Stefanos Anagnostou
          Spyridon Papadopoulos
 """
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
+import time
 import numpy as np
 import soundfile
 
+# ============================================================================
 # DATA FOR PROCESSING
+begin = time.time()
+
 
 music_signal, music_srate = soundfile.read("music.wav")
 music_signal = np.transpose(music_signal)
@@ -29,10 +33,12 @@ R = 2**B  # number of intensity levels of the original signal
 Fk = [(2*k-1)*music_srate/4/M for k in range(1, M+1)]
 
 # END OF DATA FOR PROCESSING
+# ============================================================================
 
-
+# ============================================================================
 # HELPFUL FUNCTIONS
 # START OF PART 1 FUNCTIONS
+
 
 def ath(freq):
     """Calculate the Absolute threshold of hearing."""
@@ -74,7 +80,8 @@ def mask_band(k):
         return [2]
     if 63 <= k < 127:
         return [2, 3]
-    return [2, 3, 4, 5, 6]
+    if 127 <= k < 250:
+        return [2, 3, 4, 5, 6]
 
 
 def ismask(power_spectrum, k):
@@ -102,7 +109,7 @@ def mask_power(power_spectrum, k):
         return 0
     return (10*np.log10(10**(0.1*power_spectrum[k-1]) +
                         10**(0.1*power_spectrum[k]) +
-                        10**(0.1*power_spectrum[k+1]))**2)
+                        10**(0.1*power_spectrum[k+1])))
 
 
 def imt(pos_i, pos_j, masks, flag):
@@ -150,10 +157,11 @@ def gbm(k, tone_thresholds, noise_thresholds):
              for m in range(len(noise_thresholds[k]))]))
 
 # END OF PART 1 FUNCTIONS
+
 # PART 2 FUNCTIONS
 
 
-def downsample(insig, m):
+def downsample(insig, m=M):
     """Keep every m-th point of insig."""
     return insig[::m]
 
@@ -161,8 +169,8 @@ def downsample(insig, m):
 def mdct(in_sig, k, m=M, flag="analysis"):
     """Perform the Modified Discrete Cosine Transform."""
     n = np.linspace(0, 2*m-1, 2*m)
-    hk = (np.sin((n+0.5)*np.pi/2/m) *
-          ((2/M)**(1/2)) *
+    hk = (np.sin((n+0.5)*np.pi/(2*m)) *
+          ((2/m)**(1/2)) *
           (np.cos((2*n+m+1)*(2*k+1)*np.pi/(4*m))))
     if flag == "synthesis":
         # gk = hk*(2*m-1-n)
@@ -176,22 +184,29 @@ def mdct(in_sig, k, m=M, flag="analysis"):
 def bitsk(thresholds, i, j):
     """Calculate required bits for quantization."""
     if thresholds[i][j]:
-        return int(np.log2(2**(16)/min(thresholds[i][j]))-1)
+        return int(np.ceil(np.log2(R/min(thresholds[i][j]))-1))
     return 0
 
 
-def stepk(insig, bits):
-    """Calculate the quantization step of insig using "bits" bits."""
-    return (max(insig)-min(insig))/(2**(bits+1))
-
-
-def quantize(insig, bits, step):
+def quantize(insig, bits, flag="adaptive"):
     """Perform quantization.
 
     Return the quantization level of each sample.
     """
-    sigmin = min(insig)
-    return [sigmin + np.floor((sample - sigmin)/step)*step for sample in insig]
+    def find_best_match(sample, values):
+        """Return value from values that minimizes difference from sample."""
+        result = min([abs(value - sample) for value in values])
+        if result <= 0:
+            return -(result-sample)
+        return result+sample
+    if flag == "adaptive":
+        return [find_best_match(sample,
+                                np.linspace(min(insig), max(insig), 2**bits))
+                for sample in insig]
+    if flag == "8bit":
+        return [find_best_match(sample, np.linspace(-1, 1, 2**8))
+                for sample in insig]
+    print("Flag either 'adaptive' or '8bit'")
 
 
 def oversample(insig, m=M):
@@ -207,41 +222,44 @@ def oversample(insig, m=M):
     return result
 
 
-def process(windows, spec_thresh):
+def process(windows, spec_thresh, flag="adaptive"):
     """Process the given windows and perform adaptive quantization."""
     mdct_convolutions = [[mdct(window, k) for k in range(M)]
                          for window in windows]
     mdct_downsampled = [[downsample(conv, M) for conv in convols]
                         for convols in mdct_convolutions]
-    valid_thresholds = [[[spec_thresh[s][f] for f in domains[k]]
-                         for k in range(M)] for s in range(NUM_WINDOWS)]
-    Bk = [[bitsk(valid_thresholds, s, k) for k in range(M)]
-          for s in range(NUM_WINDOWS)]
-    Dk = [[stepk(mdct_downsampled[s][k], Bk[s][k])
-          for k in range(M)] for s in range(NUM_WINDOWS)]
-    quantized = [[quantize(mdct_downsampled[s][k], Bk[s][k], Dk[s][k])
-                  for k in range(M)] for s in range(NUM_WINDOWS)]
-    oversampled = [[oversample(quantized[s][k]) for k in range(M)]
-                   for s in range(NUM_WINDOWS)]
-    return [[mdct(oversampled[s][k], k, M, "synthesis")
-             for k in range(M)] for s in range(NUM_WINDOWS)]
+    if (flag == "adaptive"):
+        valid_thresholds = [[[spec_thresh[s][f] for f in domains[k]]
+                             for k in range(M)] for s in range(NUM_WINDOWS)]
+        Bk = [[bitsk(valid_thresholds, s, k) for k in range(M)]
+              for s in range(NUM_WINDOWS)]
+        quantized = [[quantize(mdct_downsampled[s][k], Bk[s][k], flag)
+                      for k in range(M)] for s in range(NUM_WINDOWS)]
+        oversampled = [[oversample(quantized[s][k]) for k in range(M)]
+                       for s in range(NUM_WINDOWS)]
+        return [[mdct(oversampled[s][k], k, M, "synthesis")
+                 for k in range(M)] for s in range(NUM_WINDOWS)]
+    elif (flag == "8bit"):
+        quantized = [[quantize(mdct_downsampled[s][k], 8, flag)
+                      for k in range(M)] for s in range(NUM_WINDOWS)]
+        oversampled = [[oversample(quantized[s][k]) for k in range(M)]
+                       for s in range(NUM_WINDOWS)]
+        return [[mdct(oversampled[s][k], k, M, "synthesis")
+                 for k in range(M)] for s in range(NUM_WINDOWS)]
+    print("Flag either 'adaptive' or '8bit'")
 
 
-def process_8bit(windows):
-    """Process the given windows and perform uniform 8-bit quantization."""
-    mdct_convolutions = [[mdct(window, k)
-                         for k in range(M)]
-                         for window in windows]
-
-    mdct_downsampled = [[downsample(conv, M)
-                        for conv in convols]
-                        for convols in mdct_convolutions]
-    quantized_8bit = [[quantize(mdct_downsampled[s][k], 8, 2**(-7))
-                       for k in range(M)] for s in range(NUM_WINDOWS)]
-    oversampled_8bit = [[oversample(quantized_8bit[s][k]) for k in range(M)]
-                        for s in range(NUM_WINDOWS)]
-    return [[mdct(oversampled_8bit[s][k], k, M, "synthesis")
-             for k in range(M)] for s in range(NUM_WINDOWS)]
+def overlap_add(a, b, ai=0, bi=0):
+    """Add signals with specified overlap."""
+    assert ai >= 0
+    assert bi >= 0
+    al = len(a)
+    bl = len(b)
+    cl = max(ai+al, bi+bl)
+    c = np.zeros(cl)
+    c[ai: ai+al] += a
+    c[bi: bi+bl] += b
+    return c
 
 
 def reconstruct(windows, filename, srate=44100):
@@ -252,18 +270,24 @@ def reconstruct(windows, filename, srate=44100):
             added[index] = list(np.array(filtered)+np.array(added[index]))
     added = np.array(added)
     length = len(added[0])
-    result = added[0][0:length] + \
-        np.pad(added[1][0:length-N], (N, 0), 'constant')
-    for i in range(1, NUM_WINDOWS-1):
-        result = np.append(result, added[i][length-N:length] +
-                           np.pad(added[i+1][0:length-N], (2*N-length, 0), 'constant'))
-    soundfile.write(filename, result/max(result), srate)
+    dif = length-N
+    result = added[0]
+    for i in range(1, NUM_WINDOWS):
+        result = overlap_add(result, added[i], bi=len(result)-dif)
+    soundfile.write(filename, result/abs(max(result)), srate)
     return result
+
+
+def squared_error(sig1, sig2):
+    """Calculate squared error between two signals."""
+    return np.square(np.array(sig1)-np.array(sig2))
 
 # END OF PART 2 FUNCTIONS
 
 # END OF HELPFUL FUNCTIONS
+# ============================================================================
 
+# ============================================================================
 # These arrays are helpful for speeding up some computations
 
 
@@ -280,12 +304,33 @@ domains = [[f for f in range(N//2)
            for k in range(1, M+1)]  # frequency domains for the filter in 2.3
 
 # end of helpful arrays
+# ============================================================================
 
-# =============================================================================
+# ============================================================================
 # START OF PART 1
+
+
+windowed_music_signals = [music_signal[x:x+N] for x in MUL_N]
+windowed_music_signals[NUM_WINDOWS-1] = np.append(
+    windowed_music_signals[NUM_WINDOWS-1],
+    np.zeros(N-len(windowed_music_signals[NUM_WINDOWS-1])))
+
+fig = 0
+plt.figure(fig)
+plt.plot(np.linspace(0, N/music_srate, N), windowed_music_signals[780])
+plt.title("Music signal window 780")
+plt.xlabel("seconds")
+fig += 1
 
 # power spectrum for each window of the music signal
 power_spectra_music = [power_spec(music_signal[x:x+N], N) for x in MUL_N]
+
+plt.figure(fig)
+plt.plot(itofr, power_spectra_music[780])
+plt.title("Power spectrum of window 780")
+plt.xlabel("Hz")
+plt.ylabel("dB SPL")
+fig += 1
 
 # positions of masks in power spectrum of each window
 mask_positions = [find_mask_positions(spectrum)
@@ -308,108 +353,155 @@ T_TM = [[[imt(i, j, spectrarum_masks[s], "TM") for j in J_TM[s]]
         for i in range(N//2)]
         for s in range(NUM_WINDOWS)]    # individual masking thresholds
 
+plt.figure(fig)
+plt.plot(barks, transposeP_TMc[780], barks, aths)
+plt.title("Power of Tone Masks for window 780 and ATH")
+plt.xlabel("frequency (bark)")
+plt.ylabel("dB SPL")
+fig += 1
+
 transposeP_NMc = np.transpose(P_NMc)
 J_NM = [[j for j, noiseMask in enumerate(transposeP_NMc[s]) if noiseMask > 0]
         for s in range(NUM_WINDOWS)]    # indexes of noise masks
+
+plt.figure(fig)
+plt.plot(barks, transposeP_TMc[780], barks, transposeP_NMc[780], barks, aths)
+plt.title("Power of Tone Masks for window 780 and ATH")
+plt.xlabel("frequency (bark)")
+plt.ylabel("dB SPL")
+fig += 1
 
 spectrarum_masks = [[row[s] for row in P_NMc] for s in range(NUM_WINDOWS)]
 T_NM = [[[imt(i, j, spectrarum_masks[s], "NM") for j in J_NM[s]]
         for i in range(N//2)]
         for s in range(NUM_WINDOWS)]    # individual masking thresholds
 
+plt.figure(fig)
+plt.plot(barks, T_TM[780], barks, aths)
+plt.title("Tone Masks for window 780 and absolute threshold of hearing")
+plt.xlabel("frequency (bark)")
+plt.ylabel("dB SPL")
+fig += 1
+
+plt.figure(fig)
+plt.plot(barks, T_TM[780], barks, T_NM[780], barks, aths)
+plt.title("Tone and Noise Masks for window 780 and absolute threshold of hearing")
+plt.xlabel("frequency (bark)")
+plt.ylabel("dB SPL")
+fig += 1
+
 # global masking thresholds
 spectrarum_thresholds = [[gbm(i, T_TM[s], T_NM[s])
                          for i in range(N//2)]
                          for s in range(NUM_WINDOWS)]
 
-# END OF PART 1
-# =============================================================================
+plt.figure(fig)
+plt.plot(barks, spectrarum_thresholds[780], barks, aths)
+plt.title("Global Masking Threshold and ATH")
+plt.xlabel("frequency (bark)")
+plt.ylabel("dB SPL")
+fig += 1
 
-# =============================================================================
+for i in range(0, 20):
+    plt.figure(fig)
+    plt.plot(barks, spectrarum_thresholds[900+i])
+    plt.title("Global masking threshold from window " +
+              str(900) + "to " + str(919))
+    plt.xlabel("frequencies (bark)")
+    plt.ylabel("dB SPL")
+fig += 1
+for i in range(0, 20):
+    plt.figure(fig)
+    plt.plot(barks, spectrarum_thresholds[1000+i])
+    plt.title("Global masking threshold from window " +
+              str(1000) + "to " + str(1019))
+    plt.xlabel("frequencies (bark)")
+    plt.ylabel("dB SPL")
+fig += 1
+
+for i in range(0, 20):
+    plt.figure(fig)
+    plt.plot(barks, spectrarum_thresholds[200+i])
+    plt.title("Global masking threshold from window " +
+              str(200) + "to " + str(219))
+    plt.xlabel("frequencies (bark)")
+    plt.ylabel("dB SPL")
+fig += 1
+for i in range(0, 20):
+    plt.figure(fig)
+    plt.plot(barks, spectrarum_thresholds[300+i])
+    plt.title("Global masking threshold from window " +
+              str(300) + "to " + str(319))
+    plt.xlabel("frequencies (bark)")
+    plt.ylabel("dB SPL")
+fig += 1
+
+# END OF PART 1
+# ============================================================================
+
+# ============================================================================
 # START OF PART 2
 
-windowed_music_signals = [music_signal[x:x+N] for x in MUL_N]
-windowed_music_signals[NUM_WINDOWS-1] = np.append(
-    windowed_music_signals[NUM_WINDOWS-1], np.zeros(N-len(windowed_music_signals[NUM_WINDOWS-1])))
 
-synthesized = process(windowed_music_signals, spectrarum_thresholds)
+synthesized = process(windowed_music_signals,
+                      spectrarum_thresholds, "adaptive")
 
-synthesized_8bit = process_8bit(windowed_music_signals)
+synthesized_8bit = process(windowed_music_signals,
+                           spectrarum_thresholds, "8bit")
 
 result_adaptive = reconstruct(synthesized, "result_adaptive.wav")
 
 result_8bit = reconstruct(synthesized_8bit, "result_8bit.wav")
 
+# pad some zeros to the original music signal in order to calculate the
+# mean squared error. The reason why this is necessary is that the
+# the reconstructed signal contains some tiny values that could be regarded
+# as zeroes, but they are not.
+music_signal_altered = np.pad(
+    music_signal, (2*M, len(result_adaptive)-2*M-music_length), 'constant')
+
+squared_error_adaptive = squared_error(music_signal_altered, result_adaptive)
+error_adaptive = np.array(music_signal_altered)-np.array(result_adaptive)
+mse_adaptive = sum(squared_error_adaptive)/len(squared_error_adaptive)
+squared_error_8bit = squared_error(music_signal_altered, result_8bit)
+error_8bit = np.array(music_signal_altered)-np.array(result_8bit)
+mse_8bit = sum(squared_error_8bit)/len(squared_error_8bit)
+
+plt.figure(fig)
+plt.plot(np.linspace(0, music_length-1, music_length),
+         music_signal, label="music_signal")
+plt.plot(np.linspace(0, len(result_8bit)-1, len(result_8bit)),
+         result_8bit, label="result_8bit")
+plt.title("Original music signal and reconstructed signal using 8-bit quantizer")
+plt.xlabel("samples")
+plt.ylabel("dB SPL")
+plt.legend(loc="upper right")
+fig += 1
+
+plt.figure(fig)
+plt.plot(np.linspace(0, music_length-1, music_length),
+         music_signal, label="music_signal")
+plt.plot(np.linspace(0, len(result_adaptive)-1, len(result_adaptive)),
+         result_adaptive, label="result_adaptive")
+plt.title("Original music signal and reconstructed signal using adaptive quantizer")
+plt.xlabel("samples")
+plt.ylabel("dB SPL")
+plt.legend(loc="upper right")
+fig += 1
+
+plt.figure(fig)
+plt.plot(np.linspace(0, len(result_8bit)-1, len(result_8bit)),
+         error_8bit, label="error_8bit")
+plt.plot(np.linspace(0, len(result_adaptive)-1, len(result_adaptive)),
+         error_adaptive, label="error_adaptive")
+plt.title("8-bit uniform quantizer error and adaptive quantizer error")
+plt.xlabel("samples")
+plt.ylabel("dB SPL")
+plt.legend(loc="upper right")
+fig += 1
+
+end = time.time()
+print(end-begin)
+
 # END OF PART 2
-# =============================================================================
-
-# =============================================================================
-# fig = 0
-# plt.figure(fig)
-# plt.plot(np.linspace(0, N/music_srate, len(result)), result/max(result))
-# fig += 1
-# plt.figure(fig)
-# plt.plot(np.linspace(0, N/music_srate, len(music_signal)), music_signal)
-# =============================================================================
-
-# =============================================================================
-# time_axis = np.linspace(0,N/music_srate,N)
-# fig=0
-# plt.figure(fig)
-# plt.plot(time_axis,windowed_music_signals[1])
-# plt.plot(time_axis,quantize(windowed_music_signals[1],Dk[1][0]))
-# fig+=1
-# plt.figure(fig)
-# plt.plot(time_axis,windowed_music_signals[1])
-# plt.plot(time_axis,quantize(windowed_music_signals[1],
-#         (max(windowed_music_signals[1])-min(windowed_music_signals[1]))/(2**5)))
-# fig+=1
-# =============================================================================
-
-# =============================================================================
-# fig = 0
-# for i in range(0, 20):
-#     plt.figure(fig)
-#     plt.plot(barks, spectrarum_thresholds[i])
-# fig += 1
-# for i in range(0, 20):
-#     plt.figure(fig)
-#     plt.plot(barks, spectrarum_thresholds[100+i])
-# fig += 1
-# for i in range(0, 20):
-#     plt.figure(fig)
-#     plt.plot(barks, spectrarum_thresholds[200+i])
-# fig += 1
-# for i in range(0, 20):
-#     plt.figure(fig)
-#     plt.plot(barks, spectrarum_thresholds[300+i])
-# fig += 1
-# for i in range(0, 20):
-#     plt.figure(fig)
-#     plt.plot(barks, spectrarum_thresholds[400+i])
-# fig += 1
-# for i in range(0, 20):
-#     plt.figure(fig)
-#     plt.plot(barks, spectrarum_thresholds[500+i])
-# fig += 1
-# for i in range(0, 20):
-#     plt.figure(fig)
-#     plt.plot(barks, spectrarum_thresholds[600+i])
-# fig += 1
-# for i in range(0, 20):
-#     plt.figure(fig)
-#     plt.plot(barks, spectrarum_thresholds[700+i])
-# fig += 1
-# for i in range(0, 20):
-#     plt.figure(fig)
-#     plt.plot(barks, spectrarum_thresholds[800+i])
-# fig += 1
-# for i in range(0, 20):
-#     plt.figure(fig)
-#     plt.plot(barks, spectrarum_thresholds[900+i])
-# fig += 1
-# for i in range(0, 20):
-#     plt.figure(fig)
-#     plt.plot(barks, spectrarum_thresholds[1000+i])
-# fig += 1
 # =============================================================================
